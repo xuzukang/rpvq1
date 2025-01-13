@@ -197,13 +197,13 @@
           "--batch_size","16",
           "--devset_size","141",
           "--ctx_size","2048",
-          "--ft_valid_size","0",
+          "--ft_valid_size","13",
           "--ft_valid_freq","1",
           "--ft_bs","16",
           "--ft_lr","5e-4",
-          "--ft_epochs","1",
-          "--ft_early_stop","1",
-          "--finetune_blocks","-1",//"31","30","29","28","27","26","25","24",
+          "--ft_epochs","2",
+          "--ft_early_stop","2",
+          // "--finetune_blocks","31",//"31",//"30","29","28","27","26","25","24",
           
           "--new_eval",
           "--seq_len", "2048",
@@ -235,5 +235,5 @@
         "console": "integratedTerminal"
       },
     ]
-  }
+}
   

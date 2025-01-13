@@ -19,15 +19,18 @@ class QuantizedLinear(nn.Module):
             self._initialize_quantizer(finetune)
             
     def _initialize_quantizer(self, finetune):
-        if finetune == "block_codebook":
-            self._set_grad_lowrank(False)
+        if "codebook" in finetune and "lowrank" not in finetune:
+            self._set_grad_lowrank(requires_grad=False)
             self._set_grad_codebook(requires_grad=True)
-        elif finetune == "block_lowrank":
-            self._set_grad_lowrank(True)
+        elif "lowrank" in finetune and "codebook" not in finetune:
+            self._set_grad_lowrank(requires_grad=True)
             self._set_grad_codebook(requires_grad=False)
-        elif finetune == "block_codebook_lowrank":
-            self._set_grad_lowrank(True)
+        elif "codebook" in finetune and "lowrank" in finetune:
+            self._set_grad_lowrank(requires_grad=True)
             self._set_grad_codebook(requires_grad=True)
+        else:
+            self._set_grad_lowrank(requires_grad=False)
+            self._set_grad_codebook(requires_grad=False)
     
     def _set_grad_lowrank(self, requires_grad):
         for attr in ["U", "S", "Vt"]:
@@ -44,9 +47,23 @@ class QuantizedLinear(nn.Module):
                 raise ValueError("Unrecognized type in centroids")
 
     def _smooth_lowrank(self):
-        self.quantizer.U.data = torch.matmul(self.quantizer.U.data, torch.diag_embed(torch.sqrt(self.quantizer.S.data)))
-        self.quantizer.S.data = torch.ones_like(self.quantizer.S.data,requires_grad=False)
-        self.quantizer.Vt.data = torch.matmul(torch.diag_embed(torch.sqrt(self.quantizer.S.data)), self.quantizer.Vt.data)
+        # 检查 S 中是否存在负值，避免 torch.sqrt 抛出错误
+        if (self.quantizer.S.data < 0).any():
+            raise ValueError("S contains negative values, which is invalid for sqrt operation.")
+        
+        # 计算 S 的平方根
+        sqrt_S = torch.sqrt(self.quantizer.S.data)
+        
+        # 更新 U 和 Vt，使得 U @ S @ Vt 的值保持一致
+        new_U = torch.matmul(self.quantizer.U.data, torch.diag_embed(sqrt_S))
+        new_Vt = torch.matmul(torch.diag_embed(sqrt_S), self.quantizer.Vt.data)
+        
+        # 将更新后的张量分离并重新包装为 nn.Parameter，确保是叶子节点
+        self.quantizer.U = nn.Parameter(new_U.detach(), requires_grad=self.quantizer.U.requires_grad)
+        self.quantizer.Vt = nn.Parameter(new_Vt.detach(), requires_grad=self.quantizer.Vt.requires_grad)
+        
+        # 重置 S 为单位矩阵
+        self.quantizer.S = nn.Parameter(torch.ones_like(self.quantizer.S.data), requires_grad=False)
 
     def forward(self, x):
         dtype = x.dtype
@@ -64,11 +81,15 @@ class QuantizedLinear(nn.Module):
         self.weight = nn.Parameter(self.weight.to(device), requires_grad=self.weight.requires_grad)
         if self.bias is not None:
             self.bias = nn.Parameter(self.bias.to(device), requires_grad=self.bias.requires_grad)
+            
         for attr in ["U", "S", "Vt", "perm", "weight_bias", "weight_scale"]:
-            setattr(self.quantizer, attr, getattr(self.quantizer, attr).to(device))
+            tensor = getattr(self.quantizer, attr)
+            setattr(self.quantizer, attr, nn.Parameter(tensor.to(device).detach(), requires_grad=tensor.requires_grad))
+            
         for key1, codebooks in self.quantizer.centroids.items():
             for key2, val2 in codebooks.items():
-                self.quantizer.centroids[key1][key2] = val2.to(device)
+                self.quantizer.centroids[key1][key2] = nn.Parameter(val2.to(device).detach(), requires_grad=val2.requires_grad)
+                
         for key1, indices in self.quantizer.indices.items():
             for key2, val2 in indices.items():
                 self.quantizer.indices[key1][key2] = val2.to(device)

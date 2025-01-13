@@ -157,20 +157,19 @@ if __name__ == "__main__":
         
         torch.save(quantizers,args.output_dir+"quantizers.pth")
     elif args.vq_type == "finetune":
-        quantizers = torch.load('outputs/llama3-8b-hf/quantizers_fn_codebook.pth')
+        quantizers = torch.load('outputs/llama3-8b-hf/quantizers_base.pth')
         from rpvq_v3.ops import QuantizedLinear
         for i in range(len(model.model.layers)):
             for linear_id in ['self_attn.v_proj','self_attn.q_proj', 'self_attn.k_proj','self_attn.o_proj','mlp.up_proj','mlp.gate_proj','mlp.down_proj']:
                 torch.cuda.empty_cache()
                 linear = getattr(getattr(model.model.layers[i],linear_id.split('.')[0]),linear_id.split('.')[1])
                 quantizer = quantizers[i][f"{i}.{linear_id}"]
-                quantizelinear = QuantizedLinear(linear,quantizer,quant_flag=True,finetune="")
+                quantizelinear = QuantizedLinear(linear,quantizer,quant_flag=False,finetune="")
                 setattr(getattr(model.model.layers[i],linear_id.split('.')[0]),linear_id.split('.')[1],quantizelinear)
         torch.cuda.empty_cache()
         
-        dataloader, testloader = get_data_loader(
-            "wikitext2", seed=args.seed, model=args.model_name, seqlen=model.seqlen
-        )
+        dataloader, testloader = get_data_loader("wikitext2", seed=args.seed, model=args.model_name, seqlen=model.seqlen)
+        # to_device(model,"cuda")
         # ppl = eval_llama(model, testloader, "cuda")
             
         # 将quantizers转到cpu上去，减少显存
@@ -188,11 +187,10 @@ if __name__ == "__main__":
                 for key1, indices in layer.indices.items():
                     for key2, val2 in indices.items():
                         layer.indices[key1][key2] = val2.to('cpu')
+        to_device(model,"cpu")
         torch.cuda.empty_cache()
         
-        model = model.to('cpu')
-        
-        from rpvq_v3.finetune import layerwise_finetune,e2e_finetune
+        from rpvq_v3.finetune import layerwise_finetune, e2e_finetune
         if "codebook" in args.finetune_type or "lowrank" in args.finetune_type:
             layerwise_finetune(model, quantizers, dataloader, testloader, args)
         elif args.finetune_type=="e2e":

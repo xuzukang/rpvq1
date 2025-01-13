@@ -1,0 +1,36 @@
+CUDA_VISIBLE_DEVICES=6 python run_rpvq.py \
+    --model_name weights/llama3-8b-hf \
+    --output_dir outputs/llama3-8b-hf \
+    --hessian_path weights/hessian/llama-31-8b \
+    --inv_hessian_path weights/invhessian/llama-31-8b \
+    --vector_lens -1 6 \
+    --num_centroids -1 384 \
+    --num_res_layers -1 2 \
+    --num_res_centroids -1 -1 \
+    --group_num 1 \
+    --low_rank 64 \
+    --low_rank_hessian True \
+    --gptq True \
+    --npercent 0 \
+    --vq_type finetune \
+    --finetune_type block_codebook_lowrank \
+    --train_dataset wikitext2 \
+    --batch_size 16 \
+    --devset_size 141 \
+    --ctx_size 2048 \
+    --ft_valid_size 13 \
+    --ft_valid_freq 1 \
+    --ft_bs 16 \
+    --ft_lr 5e-4 \
+    --ft_epochs 1 \
+    --ft_early_stop 2 \
+    --finetune_blocks 31\
+    --new_eval \
+    --seq_len 2048 \
+    --blocksize 128 \
+    --kmeans_mode hessian \
+    --enable_perm \
+    --enable_norm \
+    --ktol 1e-5 \
+    --kiter 100 \
+    --gpu_ids 6

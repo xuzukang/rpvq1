@@ -163,3 +163,4 @@ cython_debug/
 csrc/*_hip*
 csrc/*.hip
 
+weights/

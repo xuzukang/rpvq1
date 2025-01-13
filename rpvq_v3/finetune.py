@@ -26,35 +26,35 @@ def to_device(model,device):
     model.to(device)
 
 def test_layers_output_ppl(model, inds, outputs, dev):
-    outputs = outputs.to(dev)
-    inds = inds.to(dev)
-    seqlen = outputs.shape[1]
-    nsamples = outputs.shape[0]
-    if model.model.norm is not None:
-        model.model.norm = model.model.norm.to(dev)
-    model.lm_head = model.lm_head.to(dev)
-    nlls = []
-    for i in range(nsamples):
+    with torch.no_grad():
+        outputs = outputs.to(dev)
+        inds = inds.to(dev)
+        seqlen = outputs.shape[1]
+        nsamples = outputs.shape[0]
         if model.model.norm is not None:
-            hidden_states = model.model.norm(outputs[i:i+1])
-        lm_logits = model.lm_head(hidden_states)
-        shift_logits = lm_logits[:, :-1, :].contiguous()
-        shift_labels = inds[:, (i * seqlen):((i + 1) * seqlen)][:, 1:]
-        loss_fct = nn.CrossEntropyLoss()
-        loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1).long())
-        neg_log_likelihood = loss.float() * seqlen
-        nlls.append(neg_log_likelihood)
+            model.model.norm = model.model.norm.to(dev)
+        model.lm_head = model.lm_head.to(dev)
+        nlls = []
+        for i in range(nsamples):
+            if model.model.norm is not None:
+                hidden_states = model.model.norm(outputs[i:i+1])
+            lm_logits = model.lm_head(hidden_states)
+            shift_logits = lm_logits[:, :-1, :].contiguous()
+            shift_labels = inds[:, (i * seqlen):((i + 1) * seqlen)][:, 1:]
+            loss_fct = nn.CrossEntropyLoss()
+            loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1).long())
+            neg_log_likelihood = loss.float() * seqlen
+            nlls.append(neg_log_likelihood)
     ppl = torch.exp(torch.stack(nlls).sum() / (nsamples*seqlen))
     print("ppl: ",ppl.item()) 
 
-def layerwise_finetune(model,quantizers, dataloader, testloader, args):  
+def layerwise_finetune_original(model, quantizers, dataloader, testloader, args):
     if True: #args set
         dtype_ = torch.float32
         nproc = torch.cuda.device_count()
         model.model.cpu()
-        global global_writer 
+        global global_writer
         global_writer = SummaryWriter(f'{args.output_dir}/runs/finetune_{args.finetune_type}')
-
     if True: #data set
         tokenizer = AutoTokenizer.from_pretrained(args.model_name)
         tokenizer.pad_token = tokenizer.eos_token
@@ -135,6 +135,137 @@ def layerwise_finetune(model,quantizers, dataloader, testloader, args):
         if p is not None:
             p[0].join()
 
+def layerwise_finetune(model,quantizers, dataloader, testloader, args):  
+    if True: #args set
+        dtype_ = torch.float32
+        nproc = torch.cuda.device_count()
+        model.model.cpu()
+        global global_writer 
+        global_writer = SummaryWriter(f'{args.output_dir}/runs/finetune_{args.finetune_type}')
+        cur_device = 0
+    if True: #model set
+        use_cache = model.config.use_cache
+        model.config.use_cache = False
+        layers = model.model.layers
+        model.model.embed_tokens = model.model.embed_tokens.to(cur_device)
+        # fix for llama-3.1
+        if hasattr(model.model, 'rotary_emb'):
+            model.model.rotary_emb = model.model.rotary_emb.to(cur_device)
+    if True: #data set
+        # tokenizer = AutoTokenizer.from_pretrained(args.model_name)
+        # tokenizer.pad_token = tokenizer.eos_token
+        train_dataset,eval_dataset = dataloader, testloader
+        # train_dataset,eval_dataset = get_train_eval_dataset(args,tokenizer)
+        # devset = torch.tensor(train_dataset['input_ids'][:args.devset_size*2048])
+        devset = torch.tensor(eval_dataset['input_ids'][0,:args.devset_size*2048].reshape(args.devset_size,2048),dtype=torch.int32)
+        orig_emb_cache = [model.model.embed_tokens(devset.to(cur_device)).detach().cpu()]
+
+        for _ in range(nproc):
+            orig_emb_cache.append(torch.zeros(
+                                orig_emb_cache[0].shape,
+                                dtype=orig_emb_cache[0].dtype,
+                                device=orig_emb_cache[0].device))
+        cache = {}
+        cache['i'] = 0
+        cache["attention_mask"] = None
+        cache["position_ids"] = None 
+    if True: #catch first origin block data 
+        class Catcher(nn.Module):
+            def __init__(self, module):
+                super().__init__()
+                self.module = module
+
+            def forward(self, inp, **kwargs):
+                orig_emb_cache[cur_device][args.batch_size*cache["i"] : args.batch_size*(cache["i"]+1)] = inp.data.cpu()
+                cache['i'] += 1
+                cache["attention_mask"]= kwargs['attention_mask'][-1:]
+                cache["position_ids"] = kwargs['position_ids']
+                raise ValueError
+        
+        layers[0] = Catcher(layers[0])
+        for j in range(math.ceil(args.devset_size / args.batch_size)):
+            batch = devset[j*args.batch_size:(j+1)*args.batch_size].to(cur_device)
+            try:
+                model(input_ids=batch)
+            except ValueError:
+                pass
+            
+        layers[0] = layers[0].module
+        model.model.embed_tokens = model.model.embed_tokens.cpu()
+        torch.cuda.empty_cache()
+    
+    proc_list = [None for _ in range(nproc)]
+    for i in range(len(layers)):
+        print(f'layer {i} gpu {cur_device}')
+        if nproc == 1:
+            if i>0:#第一层不用将输出复制给输入，第二层开始需要每次将上一层输出赋值给这一层输入
+                orig_emb_cache[0].copy_(orig_emb_cache[-1])
+        else:
+            if proc_list[cur_device] is not None:
+                proc_list[cur_device][0].join()
+                layers[proc_list[cur_device][1]] = None
+                torch.cuda.empty_cache()
+                if cur_device == 0:
+                    orig_emb_cache[0].copy_(orig_emb_cache[-1])
+            if cur_device + 1 < nproc and proc_list[cur_device + 1] is not None:
+                proc_list[cur_device + 1][0].join()
+        
+        torch.cuda.empty_cache()
+        st = time.time()
+        position_ids = cache['position_ids'].to(cur_device)
+        attention_mask = cache['attention_mask'].to(cur_device)
+        to_device(layers[i],cur_device)
+        
+        for j in range(math.ceil(args.devset_size / args.batch_size)):
+            torch.cuda.empty_cache()
+            with torch.no_grad():
+                orig_emb_cache[cur_device + 1][args.batch_size * j : args.batch_size * (j + 1)] = \
+                    layers[i](
+                        orig_emb_cache[cur_device][args.batch_size * j : args.batch_size * (j + 1)].to(cur_device),
+                        position_ids=position_ids,
+                        attention_mask=attention_mask,
+                        use_cache=False,
+                        output_attentions=False)[0].cpu().detach()
+        to_device(layers[i],"cpu")
+        position_ids = position_ids.cpu()
+        attention_mask = attention_mask.cpu()
+        torch.cuda.empty_cache()
+        print('computed original embedding for layer {} in {}s'.format(i, time.time() - st))
+        
+        if nproc==1:
+            if i not in args.finetune_blocks:continue
+            quantize_finetune_decoder_layer(layers[i],
+                                            i,
+                                            args,
+                                            cur_device,
+                                            quantizers[i],
+                                            orig_emb_cache[cur_device].detach(),
+                                            orig_emb_cache[cur_device + 1].detach(),)
+        else:
+            proc_list[cur_device] = (mp.Process(target=quantize_finetune_decoder_layer,
+                                                args=(model.model.layers[i],
+                                                    i,
+                                                    args,
+                                                    cur_device,
+                                                    quantizers[i],
+                                                    orig_emb_cache[cur_device].detach(),
+                                                    orig_emb_cache[cur_device + 1].detach(),
+                                                    )), i)
+            proc_list[cur_device][0].start()
+            cur_device = (cur_device + 1) % nproc
+
+    # test_layers_output_ppl(model, devset.reshape(1, -1), orig_emb_cache[cur_device + 1], cur_device)
+    
+    for p in proc_list:
+        if p is not None:
+            p[0].join()
+
+    if True: #recover model set
+        model.config.use_cache = use_cache
+        if hasattr(model.model, 'rotary_emb'):
+            model.model.rotary_emb = model.model.rotary_emb.to("cpu")
+    
+
 def quantize_finetune_decoder_layer(mixed_layer, idx, args,device, quantizer_layers, pre_orig_emb, orig_emb):
     torch.manual_seed(idx)
     torch.set_num_threads(64)
@@ -179,7 +310,7 @@ def finetune_decoder_layer_codebook(block, quantizers, device, train_dl, valid_d
         torch.cuda.empty_cache()
         linear = getattr(getattr(block,linear_id.split('.')[0]),linear_id.split('.')[1])
         quantizer = quantizers[f"{block_idx}.{linear_id}"]
-        quantizelinear = QuantizedLinear(linear,quantizer,quant_flag=False,finetune="codebook").to(device)
+        quantizelinear = QuantizedLinear(linear,quantizer,quant_flag=False,finetune=args.finetune_type).to(device)
         setattr(getattr(block,linear_id.split('.')[0]),linear_id.split('.')[1],quantizelinear)
         hook_handle = quantizelinear.register_forward_hook(hook_fn)
         #根据hook搜集当前层linear的输入输出
@@ -194,15 +325,20 @@ def finetune_decoder_layer_codebook(block, quantizers, device, train_dl, valid_d
         linear_train_dl, linear_valid_dl = split_data(inputs, outputs, args)
         torch.cuda.empty_cache()
         #搜集当前linear的codebook
-        paramters = []
-        for key1,val1 in quantizelinear.quantizer.centroids.items():
-            if isinstance(val1,dict):
-                for key2,val2 in val1.items():
-                    quantizelinear.quantizer.centroids[key1][key2] = nn.Parameter(val2.data,requires_grad=True)
-                    paramters.append(quantizelinear.quantizer.centroids[key1][key2])
-            elif isinstance(val1,torch.Tensor):
-                quantizelinear.quantizer.centroids[key1] = nn.Parameter(val1.data,requires_grad=True)
-                paramters.append(quantizelinear.quantizer.centroids[key1])
+        paramters = {}
+        if "lowrank" in args.finetune_type:
+            paramters[linear_id+".U"] = quantizelinear.quantizer.U
+            # paramters[linear_id+".S"] = quantizelinear.quantizer.S
+            paramters[linear_id+".Vt"] = quantizelinear.quantizer.Vt
+        if "codebook" in args.finetune_type:
+            for key1,val1 in quantizelinear.quantizer.centroids.items():
+                if isinstance(val1,dict):
+                    for key2,val2 in val1.items():
+                        quantizelinear.quantizer.centroids[key1][key2] = nn.Parameter(val2.data,requires_grad=True)
+                        paramters[f"{linear_id}.{key1}.{key2}"] = (quantizelinear.quantizer.centroids[key1][key2])
+                elif isinstance(val1,torch.Tensor):
+                    quantizelinear.quantizer.centroids[key1] = nn.Parameter(val1.data,requires_grad=True)
+                    paramters[f"{linear_id}.{key1}"] = quantizelinear.quantizer.centroids[key1]
         
         #获取验证集的当前loss
         quantizelinear.quant_flag = True
@@ -213,7 +349,7 @@ def finetune_decoder_layer_codebook(block, quantizers, device, train_dl, valid_d
         worse_ct = 0
         
         #配置优化器
-        optim = torch.optim.Adam(paramters, lr=args.ft_lr)
+        optim = torch.optim.Adam(paramters.values(), lr=args.ft_lr)
         scaler = torch.cuda.amp.GradScaler(enabled=(orig_dtype==torch.float16)) #
         
         for epoch in range(args.ft_epochs):
@@ -332,18 +468,18 @@ def finetune_decoder_block(block, quantizers, device, train_dl, valid_dl, orig_d
         linear = getattr(getattr(block,linear_id.split('.')[0]),linear_id.split('.')[1])
         if isinstance(linear,nn.Linear):
             quantizer = quantizers[linear_id]
-            quantizelinear = QuantizedLinear(linear,quantizer,quant_flag=False,finetune=args.finetune_type)
+            quantizelinear = QuantizedLinear(linear,quantizer,quant_flag=True,finetune=args.finetune_type)
             quantizelinear._smooth_lowrank()
             setattr(getattr(block,linear_id.split('.')[0]),linear_id.split('.')[1],quantizelinear)
         else:
-            linear.quant_flag = False
+            linear.quant_flag = True
             linear.finetune = args.finetune_type
             linear._initialize_quantizer(args.finetune_type)
             linear._smooth_lowrank()
               
     with use_tf32():
         torch.cuda.empty_cache()
-        block = block.to(device)
+        to_device(block,device)
         source = next(iter(train_dl))[0]
         position_ids = torch.arange(source.shape[1], device=device).unsqueeze(0)
         attention_mask = _prepare_4d_causal_attention_mask(
@@ -356,6 +492,8 @@ def finetune_decoder_block(block, quantizers, device, train_dl, valid_dl, orig_d
                        output_attentions=False)[0]
         best_svd = {k:copy.copy(getattr(getattr(block,linear_id.split('.')[0]),linear_id.split('.')[1]).quantizer) for k in linear_ids}
         torch.cuda.empty_cache()
+        
+        #配置需要训练参数
         paramters = {}
         for linear_id in linear_ids:
             quantizelinear = getattr(getattr(block,linear_id.split('.')[0]),linear_id.split('.')[1])
@@ -374,7 +512,8 @@ def finetune_decoder_block(block, quantizers, device, train_dl, valid_dl, orig_d
                         paramters[f"{linear_id}.{key1}"] = quantizelinear.quantizer.centroids[key1]
 
         optim = torch.optim.Adam(paramters.values(), lr=args.ft_lr)
-        best_loss = 10000#calculate_block_mse_loss(block, valid_dl, device)
+        with torch.no_grad():
+            best_loss = calculate_block_mse_loss(block, valid_dl, device)
         global_writer.add_scalar(f'Loss/test/block_{block_idx}', best_loss, 0)
         
         print(f'{block_idx} block initial valid loss {best_loss}')
