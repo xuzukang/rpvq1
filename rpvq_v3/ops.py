@@ -67,32 +67,41 @@ class QuantizedLinear(nn.Module):
 
     def forward(self, x):
         dtype = x.dtype
-        if self.quant_flag:
+        if self.quant_flag and hasattr(self,"quantizer"):
             weight = self.quantizer.fakequant(self.weight) 
-            if not self.finetune:
+            if not self.finetune :
                 self.quant_flag = False
                 self.weight = nn.Parameter(weight, requires_grad=self.weight.requires_grad)
+            elif self.finetune == "e2e":
+                self.remove_codebook_lowrank()
         else:
             weight = self.weight
         result = x @ weight.T.to(dtype) + (self.bias.to(dtype).reshape(1, -1) if self.bias is not None else 0)
         return result.to(dtype)
     
+    def remove_codebook_lowrank(self):
+        dtype = self.weight.dtype
+        self.quant_flag = False
+        self.weight = nn.Parameter(self.quantizer.fakequant(self.weight).to(dtype), requires_grad=self.weight.requires_grad) 
+        del self.quantizer
+    
     def _move_to_device(self, device):
         self.weight = nn.Parameter(self.weight.to(device), requires_grad=self.weight.requires_grad)
         if self.bias is not None:
             self.bias = nn.Parameter(self.bias.to(device), requires_grad=self.bias.requires_grad)
-            
-        for attr in ["U", "S", "Vt", "perm", "weight_bias", "weight_scale"]:
-            tensor = getattr(self.quantizer, attr)
-            setattr(self.quantizer, attr, nn.Parameter(tensor.to(device).detach(), requires_grad=tensor.requires_grad))
-            
-        for key1, codebooks in self.quantizer.centroids.items():
-            for key2, val2 in codebooks.items():
-                self.quantizer.centroids[key1][key2] = nn.Parameter(val2.to(device).detach(), requires_grad=val2.requires_grad)
+        
+        if hasattr(self,"quantizer"):
+            for attr in ["U", "S", "Vt", "perm", "weight_bias", "weight_scale"]:
+                tensor = getattr(self.quantizer, attr)
+                setattr(self.quantizer, attr, nn.Parameter(tensor.to(device), requires_grad=tensor.requires_grad))
                 
-        for key1, indices in self.quantizer.indices.items():
-            for key2, val2 in indices.items():
-                self.quantizer.indices[key1][key2] = val2.to(device)
+            for key1, codebooks in self.quantizer.centroids.items():
+                for key2, val2 in codebooks.items():
+                    self.quantizer.centroids[key1][key2] = nn.Parameter(val2.to(device), requires_grad=val2.requires_grad)
+                    
+            for key1, indices in self.quantizer.indices.items():
+                for key2, val2 in indices.items():
+                    self.quantizer.indices[key1][key2] = val2.to(device)
         torch.cuda.empty_cache()
 
     def to(self, device):
@@ -104,4 +113,4 @@ class QuantizedLinear(nn.Module):
 
     def cuda(self, idx=0):
         return self.to(f'cuda:{idx}')
-        
+    

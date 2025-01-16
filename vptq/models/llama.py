@@ -27,7 +27,10 @@ def get_llama(model_name, seqlen=None):
     torch.nn.init.uniform_ = skip
     torch.nn.init.normal_ = skip
     from transformers import LlamaForCausalLM
-    model = LlamaForCausalLM.from_pretrained(model_name, attn_implementation="eager", torch_dtype=torch.bfloat16)
+    # model = LlamaForCausalLM.from_pretrained(model_name, attn_implementation="eager", torch_dtype=torch.bfloat16)
+    import models
+    model = models.LlamaForCausalLM.from_pretrained(model_name, attn_implementation="eager", torch_dtype=torch.bfloat16)
+
 
     if seqlen is not None:
         model.seqlen = seqlen

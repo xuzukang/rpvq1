@@ -7,7 +7,7 @@
 
 import numpy as np
 import torch
-
+import os
 
 # set seed for reproducibility
 def set_seed(seed):
@@ -17,29 +17,39 @@ def set_seed(seed):
 
 def get_wikitext2(nsamples, seed, seqlen, model):
     print('Loading dataset...')
-    from datasets import load_dataset
-    traindata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='train')
-    testdata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='test')
-    print('Preprocessing dataset....')
-    from transformers import AutoTokenizer
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(model, use_fast=False, trust_remote_code=True)
-    except Exception:
-        tokenizer = AutoTokenizer.from_pretrained(model, use_fast=True, trust_remote_code=True)
+    path = f"./cache/wikitext2_train_{nsamples}_{seqlen}.pt"
+    if os.path.exists(path):
+        trainloader = torch.load(path)
+        testenc = torch.load(f"./cache/wikitext2_test_{nsamples}_{seqlen}.pt")
+    else:
+        from datasets import load_dataset
+        traindata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='train')
+        testdata = load_dataset('wikitext', 'wikitext-2-raw-v1', split='test')
+        print('Preprocessing dataset....')
+        from transformers import AutoTokenizer
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(model, use_fast=False, trust_remote_code=True)
+        except Exception:
+            tokenizer = AutoTokenizer.from_pretrained(model, use_fast=True, trust_remote_code=True)
 
-    trainenc = tokenizer("\n\n".join(traindata['text']), return_tensors='pt')
-    testenc = tokenizer("\n\n".join(testdata['text']), return_tensors='pt')
+        trainenc = tokenizer("\n\n".join(traindata['text']), return_tensors='pt')
+        testenc = tokenizer("\n\n".join(testdata['text']), return_tensors='pt')
 
-    import random
-    random.seed(seed)
-    trainloader = []
-    for _ in range(nsamples):
-        i = random.randint(0, trainenc.input_ids.shape[1] - seqlen - 1)
-        j = i + seqlen
-        inp = trainenc.input_ids[:, i:j]
-        tar = inp.clone()
-        tar[:, :-1] = -100
-        trainloader.append((inp, tar))
+        import random
+        random.seed(seed)
+        trainloader = []
+        for _ in range(nsamples):
+            i = random.randint(0, trainenc.input_ids.shape[1] - seqlen - 1)
+            j = i + seqlen
+            inp = trainenc.input_ids[:, i:j]
+            tar = inp.clone()
+            tar[:, :-1] = -100
+            trainloader.append((inp, tar))
+        
+        if not os.path.exists("./cache"):
+            os.makedirs("./cache")
+        torch.save(trainloader, path)
+        torch.save(testenc, f"./cache/wikitext2_test_{nsamples}_{seqlen}.pt")
     return trainloader, testenc
 
 

@@ -33,6 +33,8 @@ os.environ["CUDNN_DETERMINISTIC"] = "1"
 from datetime import datetime
 from typing import List, Tuple
 from rpvq_v3.finetune import to_device
+from rpvq_v3.finetune import finetune, e2e_finetune
+import transformers
 
 class Logger(object):
     def __init__(self, folder="logs"):
@@ -96,6 +98,7 @@ class VPTQArguments:
     ft_valid_freq: int = field(default=1)
     ft_valid_size: int = field(default=128)
     ft_early_stop: int = field(default=2)
+    ft_loss_type: str = field(default="mse")
     finetune_type : str = field(default="codebook")
     finetune_blocks: List[int] = field(default_factory=lambda: list(range(32)))
 
@@ -123,6 +126,7 @@ if __name__ == "__main__":
 
     if "llama" in args.model_name.lower():
         model = get_llama(args.model_name)
+        tokenizer = transformers.Qwen2TokenizerFast.from_pretrained(args.model_name,use_fact=True,add_eos_token=False,add_bos_token=False,padding_side="right")
     elif "qwen" in args.model_name.lower():
         model = get_qwen(args.model_name)
     elif "mistral" in args.model_name.lower():
@@ -140,8 +144,8 @@ if __name__ == "__main__":
     model.eval()
     
     # # eval wikitext2 ppl of original model
-    # dataloader, testloader = get_data_loader("wikitext2", seed=args.seed, model=args.model_name, seqlen=model.seqlen)
-    # ppl = eval_llama(model, testloader, "cuda")
+    dataloader, testloader = get_data_loader("wikitext2", seed=args.seed, model=args.model_name, seqlen=model.seqlen)
+    # ppl = eval_llama(model, testloader, "cuda")   
     
     if args.vq_type == "rpvq_v3":
         tick = time.time()
@@ -168,7 +172,7 @@ if __name__ == "__main__":
                 setattr(getattr(model.model.layers[i],linear_id.split('.')[0]),linear_id.split('.')[1],quantizelinear)
         torch.cuda.empty_cache()
         
-        dataloader, testloader = get_data_loader("wikitext2", seed=args.seed, model=args.model_name, seqlen=model.seqlen)
+        # dataloader, testloader = get_data_loader("wikitext2", seed=args.seed, model=args.model_name, seqlen=model.seqlen)
         # to_device(model,"cuda")
         # ppl = eval_llama(model, testloader, "cuda")
             
@@ -190,15 +194,16 @@ if __name__ == "__main__":
         to_device(model,"cpu")
         torch.cuda.empty_cache()
         
-        from rpvq_v3.finetune import layerwise_finetune, e2e_finetune
+        
         if "codebook" in args.finetune_type or "lowrank" in args.finetune_type:
-            layerwise_finetune(model, quantizers, dataloader, testloader, args)
+            finetune(model, quantizers, dataloader, testloader, args)
         elif args.finetune_type=="e2e":
+            # model.model.layers = model.model.layers[:1]
             e2e_finetune(model, dataloader, testloader, args)
         else:
             raise ValueError(f"Unsupported finetune_type: {args.finetune_type}")
         
-        for mm in range(32):
+        for mm in range(len(model.model.layers)):
             to_device(model.model.layers[mm],"cuda")
             for linear_id in ['self_attn.v_proj','self_attn.q_proj', 'self_attn.k_proj','self_attn.o_proj','mlp.up_proj','mlp.gate_proj','mlp.down_proj']:
                 linear = getattr(getattr(model.model.layers[mm],linear_id.split('.')[0]),linear_id.split('.')[1])
@@ -208,34 +213,30 @@ if __name__ == "__main__":
         raise ValueError(f"Unsupported vq_type: {quant_args.vq_type}")
     
     model.eval()
-    if args.eval:
-        datasets = ["wikitext2", "c4"]
-    if args.new_eval:
-        datasets = ["wikitext2", "c4-new"]
-
-    seqlens = [2048, 8192, 4096]
-
-    # store results
-    results = {}
-
-    for seqlen in seqlens:
-        model.seqlen = seqlen
-        for dataset in datasets:
-            dataloader, testloader = get_data_loader(
-                dataset, seed=args.seed, model=args.model_name, seqlen=model.seqlen)
-            print(dataset)
-            if "llama" in args.model_name.lower() or "mistral" in args.model_name.lower():
-                ppl = eval_llama(model, testloader, "cuda")
-            elif "qwen" in args.model_name.lower():
-                ppl = eval_qwen(model, testloader, "cuda")
-            else:
-                raise ValueError(f"Unsupported model: {args.model_name}")
-            print("ppl: ",ppl)
-            # torch.save(model,args.output_dir+"/"+args.model_name+dataset+f"{ppl}.pt")
-
-            if f"ctx_{seqlen}" not in results:
-                results[f"ctx_{seqlen}"] = {}
-            results[f"ctx_{seqlen}"][dataset] = ppl
-
-        with open(osp.join(args.output_dir, "ppl_results.json"), "w") as f:
-            json.dump(results, f, indent=2)
+    
+    if "llama" in args.model_name.lower() or "mistral" in args.model_name.lower():
+        ppl = eval_llama(model, testloader, "cuda")
+    elif "qwen" in args.model_name.lower():
+        ppl = eval_qwen(model, testloader, "cuda")
+    else:
+        raise ValueError(f"Unsupported model: {args.model_name}")
+    print("ppl: ",ppl)
+    
+    import lm_eval
+    from lm_eval.tasks import TaskManager
+    from lm_eval.utils import make_table
+    from lm_eval.models.huggingface import HFLM,eval_logger
+    
+    hflm = HFLM(pretrained=model, tokenizer=tokenizer,batch_size=16,max_batch_size=256)
+    results = lm_eval.simple_evaluate(hflm,tasks=["arc_challenge","arc_easy","boolq","hellaswag",
+                                                  "lambada_openai","openbookqa","piqa","social_iqa","winogrande",],
+                                      batch_size=16,max_batch_size=256)
+    metric_vals = {task: round(result.get('acc_norm,none', result['acc,none']), 4) for task, result in results['results'].items()}
+    mean_acc_val = round(sum(metric_vals.values()) / len(metric_vals.values()), 4)
+    std_vals = {task: round(result.get('acc_norm_stderr,none', result['acc_stderr,none']), 4) for task, result in results['results'].items()}
+    mean_std_val =round(sum(std_vals.values()) / len(std_vals.values()), 4) 
+    metric_vals['acc_avg'] = mean_acc_val
+    results['results']['AVERAGE'] = {
+        "acc,none":mean_acc_val,
+        "acc_stderr,none":mean_std_val
+    }

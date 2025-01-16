@@ -13,7 +13,7 @@ CUDA_VISIBLE_DEVICES=6 python run_rpvq.py \
     --gptq True \
     --npercent 0 \
     --vq_type finetune \
-    --finetune_type block_codebook_lowrank \
+    --finetune_type block_codebook \
     --train_dataset wikitext2 \
     --batch_size 16 \
     --devset_size 141 \
