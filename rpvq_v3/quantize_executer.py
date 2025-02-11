@@ -39,6 +39,18 @@ def setup_logging(log_path, task_id, debug=False):
     # Add handlers to the logger
     logger.addHandler(file_handler)
 
+def move_to_cpu(data):
+    """ 递归遍历数据结构，将所有 CUDA 张量移动到 CPU """
+    if isinstance(data, torch.Tensor):
+        return data.cpu()
+    elif isinstance(data, dict):
+        return {k: move_to_cpu(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [move_to_cpu(v) for v in data]
+    elif isinstance(data, tuple):
+        return tuple(move_to_cpu(v) for v in data)
+    else:
+        return data
 
 # quantize executer
 def quantize_executer(task_id, tasks, args, quant_args, input_queues, output_queues):
@@ -80,6 +92,9 @@ def quantize_executer(task_id, tasks, args, quant_args, input_queues, output_que
 
         # send quantized layer to output queue
         layer_state_dict = layer.cpu().state_dict()
+        quantizers_ = move_to_cpu(quantizers_)
+        qlinear_args = move_to_cpu(qlinear_args)
+        layer_state_dict = move_to_cpu(layer_state_dict)
 
         # for 70b/405b models,
         # layer_state_dict is too large for CPU memory

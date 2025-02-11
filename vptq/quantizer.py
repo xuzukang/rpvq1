@@ -35,6 +35,7 @@ class QuantizationArguments:
     low_rank: int = field(default=0)
     low_rank_hessian: bool = field(default=False)
     gptq: bool = field(default=True)
+    loss_direct: bool = field(default=False)
 
 
 # N-percent outlier Vector Quantizator

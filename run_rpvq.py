@@ -99,23 +99,39 @@ class VPTQArguments:
     ft_valid_size: int = field(default=128)
     ft_early_stop: int = field(default=2)
     ft_loss_type: str = field(default="mse")
+    finetune: bool = field(default=False)
     finetune_type : str = field(default="codebook")
     finetune_blocks: List[int] = field(default_factory=lambda: list(range(32)))
+    tasks: List[str] = field(default_factory=lambda: ["arc_challenge","arc_easy","piqa","winogrande","hellaswag"])
 
 
 if __name__ == "__main__":
     parser = HfArgumentParser((VPTQArguments, QuantizationArguments))
     args, quant_args = parser.parse_args_into_dataclasses()
-    for key, value in vars(args).items():
-            print(f"{key}: {value}")
-    for key, value in vars(quant_args).items():
-            print(f"{key}: {value}")
 
     if args.gpu_ids is not None:
         args.num_gpus = len(args.gpu_ids)
     
-    folder = args.output_dir+'/print_info'
+    args.output_dir = "outputs"+"/"+os.path.basename(args.model_name)+"/"+args.output_dir
+    
+    args.important_config = "gptq:"+ str(quant_args.gptq) + "-" \
+                          + "low_rank:"+str(bool(quant_args.low_rank)) +"-" \
+                          + "vector_lens:"+''.join(map(str, quant_args.vector_lens[1:])) + "-" \
+                          + "num_centroids:"+''.join(map(str, quant_args.num_centroids[1:])) + "-" \
+                          + "num_res_layers:"+''.join(map(str, quant_args.num_res_layers[1:])) + "-" \
+                          + "loss_direct:"+str(quant_args.loss_direct)
+
+    args.quantizers_path = args.output_dir+"quantizers_base"+"-"+ args.important_config+".pth"
+
+    folder = args.output_dir+'/print_info/'+args.important_config + "-"\
+           + "finetune:" + str(args.finetune) + "-" \
+           + "finetune_type:" + args.finetune_type
     sys.stdout = Logger(folder=folder)
+
+    for key, value in vars(args).items():
+        print(f"{key}: {value}")
+    for key, value in vars(quant_args).items():
+        print(f"{key}: {value}")
 
     # set output folder based on time
     args.output_dir = osp.join(args.output_dir, time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime()))
@@ -143,7 +159,6 @@ if __name__ == "__main__":
 
     model.eval()
     
-    # # eval wikitext2 ppl of original model
     dataloader, testloader = get_data_loader("wikitext2", seed=args.seed, model=args.model_name, seqlen=model.seqlen)
     # ppl = eval_llama(model, testloader, "cuda")   
     
@@ -159,9 +174,50 @@ if __name__ == "__main__":
         else:
             raise ValueError(f"Unsupported model: {args.model_name}")
         
-        torch.save(quantizers,args.output_dir+"quantizers.pth")
-    elif args.vq_type == "finetune":
-        quantizers = torch.load('outputs/llama3-8b-hf/quantizers_base.pth')
+        if True:
+            print("--------------starting  no finetune testing---------------")
+            to_device(model,"cuda")
+            model.eval()
+            
+            if "llama3" in args.model_name.lower():
+                model.seqlen = 2048
+            elif "llama-2" in args.model_name.lower():
+                model.seqlen = 4096
+
+            if "llama" in args.model_name.lower() or "mistral" in args.model_name.lower():
+                ppl = eval_llama(model, testloader, "cuda")
+            elif "qwen" in args.model_name.lower():
+                ppl = eval_qwen(model, testloader, "cuda")
+            else:
+                raise ValueError(f"Unsupported model: {args.model_name}")
+            print("ppl: ",ppl)
+            
+            import lm_eval
+            from lm_eval.tasks import TaskManager
+            from lm_eval.utils import make_table
+            from lm_eval.models.huggingface import HFLM,eval_logger
+            import os
+            os.environ["HF_HOME"] = "/data01/home/xuzk/.cache/"
+            os.environ["HF_DATASETS_CACHE"] = "/data01/home/xuzk/.cache/"
+            to_device(model,"cuda")
+            hflm = HFLM(pretrained=model, tokenizer=tokenizer,batch_size=16,max_batch_size=256)
+            results = lm_eval.simple_evaluate(hflm,tasks=args.tasks,
+                                            batch_size=16,max_batch_size=256)
+            metric_vals = {task: round(result.get('acc,none'), 4) for task, result in results['results'].items()}
+            mean_acc_val = round(sum(metric_vals.values()) / len(metric_vals.values()), 4)
+            std_vals = {task: round(result.get('acc_norm_stderr,none', result['acc_stderr,none']), 4) for task, result in results['results'].items()}
+            mean_std_val =round(sum(std_vals.values()) / len(std_vals.values()), 4) 
+            metric_vals['acc_avg'] = mean_acc_val
+            results['results']['AVERAGE'] = {
+                "acc,none":mean_acc_val,
+                "acc_stderr,none":mean_std_val
+            }
+            print(results['results'])
+            print("--------------end  no finetune testing---------------")
+        
+        # torch.save(quantizers,args.quantizers_path)
+    if args.finetune:
+        # quantizers = torch.load('outputs/llama3-8b-hf/quantizers_base.pth')
         from rpvq_v3.ops import QuantizedLinear
         for i in range(len(model.model.layers)):
             for linear_id in ['self_attn.v_proj','self_attn.q_proj', 'self_attn.k_proj','self_attn.o_proj','mlp.up_proj','mlp.gate_proj','mlp.down_proj']:
@@ -179,9 +235,10 @@ if __name__ == "__main__":
         # 将quantizers转到cpu上去，减少显存
         for block_id,block_layers in quantizers.items():
             for layer_id,layer in block_layers.items():
-                layer.S = layer.S.to('cpu')
-                layer.U = layer.U.to('cpu')
-                layer.Vt = layer.Vt.to('cpu')
+                if quant_args.low_rank:
+                    layer.S = layer.S.to('cpu')
+                    layer.U = layer.U.to('cpu')
+                    layer.Vt = layer.Vt.to('cpu')
                 layer.perm = layer.perm.to('cpu')
                 layer.weight_bias = layer.weight_bias.to('cpu')
                 layer.weight_scale = layer.weight_scale.to('cpu')
@@ -209,34 +266,43 @@ if __name__ == "__main__":
                 linear = getattr(getattr(model.model.layers[mm],linear_id.split('.')[0]),linear_id.split('.')[1])
                 linear.quant_flag = True
                 linear.finetune=""
-    else:
-        raise ValueError(f"Unsupported vq_type: {quant_args.vq_type}")
-    
-    model.eval()
-    
-    if "llama" in args.model_name.lower() or "mistral" in args.model_name.lower():
-        ppl = eval_llama(model, testloader, "cuda")
-    elif "qwen" in args.model_name.lower():
-        ppl = eval_qwen(model, testloader, "cuda")
-    else:
-        raise ValueError(f"Unsupported model: {args.model_name}")
-    print("ppl: ",ppl)
-    
-    import lm_eval
-    from lm_eval.tasks import TaskManager
-    from lm_eval.utils import make_table
-    from lm_eval.models.huggingface import HFLM,eval_logger
-    
-    hflm = HFLM(pretrained=model, tokenizer=tokenizer,batch_size=16,max_batch_size=256)
-    results = lm_eval.simple_evaluate(hflm,tasks=["arc_challenge","arc_easy","boolq","hellaswag",
-                                                  "lambada_openai","openbookqa","piqa","social_iqa","winogrande",],
-                                      batch_size=16,max_batch_size=256)
-    metric_vals = {task: round(result.get('acc_norm,none', result['acc,none']), 4) for task, result in results['results'].items()}
-    mean_acc_val = round(sum(metric_vals.values()) / len(metric_vals.values()), 4)
-    std_vals = {task: round(result.get('acc_norm_stderr,none', result['acc_stderr,none']), 4) for task, result in results['results'].items()}
-    mean_std_val =round(sum(std_vals.values()) / len(std_vals.values()), 4) 
-    metric_vals['acc_avg'] = mean_acc_val
-    results['results']['AVERAGE'] = {
-        "acc,none":mean_acc_val,
-        "acc_stderr,none":mean_std_val
-    }
+        if True:
+            print("--------------starting after-finetune testing---------------")
+            to_device(model,"cuda")
+            
+            model.eval()
+            if "llama3" in args.model_name.lower():
+                model.seqlen = 2048
+            elif "llama-2" in args.model_name.lower():
+                model.seqlen = 4096
+
+            if "llama" in args.model_name.lower() or "mistral" in args.model_name.lower():
+                ppl = eval_llama(model, testloader, "cuda")
+            elif "qwen" in args.model_name.lower():
+                ppl = eval_qwen(model, testloader, "cuda")
+            else:
+                raise ValueError(f"Unsupported model: {args.model_name}")
+            print("ppl: ",ppl)
+            
+            import lm_eval
+            from lm_eval.tasks import TaskManager
+            from lm_eval.utils import make_table
+            from lm_eval.models.huggingface import HFLM,eval_logger
+            import os
+            os.environ["HF_HOME"] = "/data01/home/xuzk/.cache/"
+            os.environ["HF_DATASETS_CACHE"] = "/data01/home/xuzk/.cache/"
+            to_device(model,"cuda")
+            hflm = HFLM(pretrained=model, tokenizer=tokenizer,batch_size=16,max_batch_size=256)
+            results = lm_eval.simple_evaluate(hflm,tasks=args.tasks,
+                                            batch_size=16,max_batch_size=256)
+            metric_vals = {task: round(result.get('acc,none'), 4) for task, result in results['results'].items()}
+            mean_acc_val = round(sum(metric_vals.values()) / len(metric_vals.values()), 4)
+            std_vals = {task: round(result.get('acc_norm_stderr,none', result['acc_stderr,none']), 4) for task, result in results['results'].items()}
+            mean_std_val =round(sum(std_vals.values()) / len(std_vals.values()), 4) 
+            metric_vals['acc_avg'] = mean_acc_val
+            results['results']['AVERAGE'] = {
+                "acc,none":mean_acc_val,
+                "acc_stderr,none":mean_std_val
+            }
+            print(results['results'])
+            print("--------------end  after-finetune testing---------------")

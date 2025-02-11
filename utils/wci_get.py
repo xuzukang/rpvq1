@@ -1,9 +1,6 @@
 import argparse
 import datetime
 import os
-import sys
-sys.path.append(os.getcwd())
-sys.path.append(os.path.dirname(os.getcwd()))
 import random
 from copy import deepcopy
 
@@ -27,9 +24,9 @@ parser.add_argument('--batch_size', default=2, type=int)
 parser.add_argument('--devset_size', default=256, type=int)
 parser.add_argument('--ctx_size', default=4096, type=int)
 parser.add_argument('--base_model',
-                    default='weights/Llama-2-7b-hf',
+                    default='weights/llama3-8b-hf',
                     type=str)
-parser.add_argument('--save_path', default='hessians/llama2_7b', type=str)
+parser.add_argument('--save_path', default='weights/fisher/llama3-8b-hf', type=str)
 parser.add_argument('--scratch_path', default=None, type=str)
 parser.add_argument('--chunk_size', default=256, type=int)
 parser.add_argument('--async_copy_speed', default=-1, type=int)

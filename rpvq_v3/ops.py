@@ -34,7 +34,9 @@ class QuantizedLinear(nn.Module):
     
     def _set_grad_lowrank(self, requires_grad):
         for attr in ["U", "S", "Vt"]:
-            setattr(self.quantizer, attr, nn.Parameter(getattr(self.quantizer, attr).data, requires_grad=requires_grad))
+            tensor = getattr(self.quantizer, attr)
+            if tensor is not None:
+                setattr(self.quantizer, attr, nn.Parameter(tensor.data, requires_grad=requires_grad))
     
     def _set_grad_codebook(self, requires_grad):
         for key1, val1 in self.quantizer.centroids.items():
@@ -93,7 +95,8 @@ class QuantizedLinear(nn.Module):
         if hasattr(self,"quantizer"):
             for attr in ["U", "S", "Vt", "perm", "weight_bias", "weight_scale"]:
                 tensor = getattr(self.quantizer, attr)
-                setattr(self.quantizer, attr, nn.Parameter(tensor.to(device), requires_grad=tensor.requires_grad))
+                if tensor is not None:
+                    setattr(self.quantizer, attr, nn.Parameter(tensor.to(device), requires_grad=tensor.requires_grad))
                 
             for key1, codebooks in self.quantizer.centroids.items():
                 for key2, val2 in codebooks.items():

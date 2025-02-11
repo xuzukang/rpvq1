@@ -171,27 +171,53 @@
         "program": "${workspaceFolder}/run_rpvq.py",
         "args": [
           "--model_name", "weights/llama3-8b-hf",
-          "--output_dir", "outputs/llama3-8b-hf",
-          "--hessian_path", "weights/hessian/llama-31-8b",
-          "--inv_hessian_path", "weights/invhessian/llama-31-8b",
+          // "--hessian_path", "weights/hessian/llama-31-8b",
+          // "--inv_hessian_path", "weights/invhessian/llama-31-8b",
+          "--hessian_path", "weights/hessian/llama3-8b",
+          "--inv_hessian_path", "weights/invhessian/llama3-8b",
+
+          // "--model_name", "weights/llama-2-7b-hf",
+          // "--hessian_path", "weights/hessian/llama2-7b",
+          // "--inv_hessian_path", "weights/invhessian/llama2-7b",
 
           // "--model_name", "weights/Qwen2.5-7B-Instruct",
-          // "--output_dir", "outputs/Qwen2.5-7B-Instruct",
           // "--hessian_path", "weights/hessian/qwen25-7b",
           // "--inv_hessian_path", "weights/invhessian/qwen25-7b",
 
           //rpvq的配置
-          "--vector_lens", "-1",        "6", // "6",  "6",  "6",
-          "--num_centroids", "-1",      "384",//"512","256","256",
-          "--num_res_layers", "-1",     "2",  //"2",  "2",  "2",
-          "--num_res_centroids", "-1",  "-1", //"-1", "-1", "-1",
+          // "--output_dir", "4bit",
+          // "--vector_lens", "-1",        "6",   "6",  "6",  "6",
+          // "--num_centroids", "-1",      "32768", "8192","2048","512",
+          // "--num_res_layers", "-1",     "2",   "2",  "2",  "2",
+          // "--num_res_centroids", "-1",  "-1",  "-1", "-1", "-1",
+
+          // "--output_dir", "3bit",
+          // "--vector_lens", "-1",        "6",   "6",  "6",  "6",
+          // "--num_centroids", "-1",      "2048", "512","256","256",
+          // "--num_res_layers", "-1",     "2",   "2",  "2",  "2",
+          // "--num_res_centroids", "-1",  "-1",  "-1", "-1", "-1",
+
+          "--output_dir", "2.25bit", 
+          "--vector_lens", "-1",        "6",   "6",  "6",  "6",
+          "--num_centroids", "-1",      "512", "128","64","32",
+          "--num_res_layers", "-1",     "2",   "2",  "2",  "2",
+          "--num_res_centroids", "-1",  "-1",  "-1", "-1", "-1",
+
+          // "--output_dir", "2bit", //2bit 2bit-31hessian
+          // "--vector_lens", "-1",        "6",   "6",  "6",  "6",
+          // "--num_centroids", "-1",      "256", "64","32","32",
+          // "--num_res_layers", "-1",     "2",   "2",  "2",  "2",
+          // "--num_res_centroids", "-1",  "-1",  "-1", "-1", "-1",
+
           "--group_num", "1",
-          "--low_rank","64", //按照4096的比例折算。0.25bit
+          // "--low_rank","32", //按照4096的比例折算。0.25bit
           "--low_rank_hessian","True",
           "--gptq","True",
           "--npercent", "0", //outlier rate
 
-          "--vq_type","finetune",//finetune  rpvq_v3
+          "--vq_type","rpvq_v3",
+
+          "--finetune","True",
           "--finetune_type","e2e",// block_codebook_lowrank block_codebook  block_lowrank e2e
           "--train_dataset","wikitext2",
           "--batch_size","4",
@@ -200,11 +226,17 @@
           "--ft_valid_size","5",
           "--ft_valid_freq","1",
           "--ft_bs","2",
-          "--ft_lr","5e-4",
-          "--ft_epochs","2",
+          "--ft_lr","5e-5",
+          "--ft_epochs","1",
           "--ft_early_stop","2",
           "--ft_loss_type","kl", //kl  mse
-          "--finetune_blocks","0",//"31",//"30","29","28","27","26","25","24",
+          "--finetune_blocks",
+          // "0",
+          "31","30","29","28","27","26","25","24","23","22","21","20","19","18","17","16","15","14","13","12","11","10","9","8","7","6","5","4","3","2","1","0",
+
+          "--loss_direct","False", //是否在kmeans的时候考虑损失的方向
+
+          "--tasks", "arc_challenge","arc_easy","hellaswag","piqa","winogrande",
           
           "--new_eval",
           "--seq_len", "2048",
@@ -214,9 +246,49 @@
           "--enable_norm",
           "--ktol", "1e-5",
           "--kiter", "100",
-          "--gpu_ids", "6",//"6","6","6","6","6","6","5","5","5","5","5","5","5","1","1","1","1","1","1","1","4","4","4","4","4","4","4","2","2","2","2",
+          "--gpu_ids", "5",//"6","6","6","6","6","6","6","6","6","6","6","6","6","6","6",//"1","1","1","1","1","4","4","4","4","4","4","4","2","2","2","2",
         ],
-        "env": {"CUDA_VISIBLE_DEVICES": "6"},
+        "env": {"CUDA_VISIBLE_DEVICES": "5"},
+        "console": "integratedTerminal"
+      },
+      {
+        "name": "get_hessian",
+        "type": "python",
+        "request": "launch",
+        "program": "utils/hessian_offline_llama.py",
+        "cwd": "${workspaceFolder}/",
+        "justMyCode": false,
+        "args": [
+          "--base_model", "weights/llama3-8b-hf",
+          "--save_path", "weights/hessian/llama3_8b",
+          "--seed", "0",
+          "--batch_size", "2",
+          "--devset_size", "256",
+          "--ctx_size", "2048",
+          // "--scratch_path", "None", 
+          // "--chunk_size", "256",
+          // "--async_copy_speed", "-1",
+          // "--act_save_rate", "4",
+          // "--save_activations",
+          // "--sample_proc", "4"
+        ],
+        "env": {"CUDA_VISIBLE_DEVICES": "5",
+                "PYTHONPATH": "${workspaceFolder}/quip_sharp:${env:PYTHONPATH}", },
+        "console": "integratedTerminal"
+      },
+      {
+        "name": "get_invhessian",
+        "type": "python",
+        "request": "launch",
+        "program": "utils/invhessian.py",
+        "cwd": "${workspaceFolder}/",
+        "justMyCode": false,
+        "args": [
+          "--load_hessian_dir", "weights/hessian/llama3_8b",
+          "--store_inv_hessian_dir", "weights/invhessian/llama3_8b",
+        ],
+        "env": {"CUDA_VISIBLE_DEVICES": "5",
+                "PYTHONPATH": "${workspaceFolder}/quip_sharp:${env:PYTHONPATH}", },
         "console": "integratedTerminal"
       },
       {
