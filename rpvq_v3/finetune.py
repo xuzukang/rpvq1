@@ -546,8 +546,8 @@ def e2e_finetune(model, dataloader, testloader, args):
     train_dataset, eval_dataset = dataloader, testloader
     devset_train = torch.zeros([1,args.ctx_size]).to(torch.int32)
     devset_test = eval_dataset['input_ids'][0, :args.devset_size * args.ctx_size].reshape(args.devset_size, args.ctx_size).to(torch.int32)
-    # for i in train_dataset:
-    #     devset_train = torch.cat([devset_train, i[0].to(torch.int32)], dim=0)
+    for i in train_dataset:
+        devset_train = torch.cat([devset_train, i[0].to(torch.int32)], dim=0)
     devset = torch.cat([devset_train, devset_test], dim=0)[1:]
 
     optim = torch.optim.Adam(parameters.values(), lr=args.ft_lr)

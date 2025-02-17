@@ -29,7 +29,7 @@ parser.add_argument('--ctx_size', default=4096, type=int)
 parser.add_argument('--base_model',
                     default='weights/Llama-2-7b-hf',
                     type=str)
-parser.add_argument('--save_path', default='hessians/llama2_7b', type=str)
+parser.add_argument('--save_path', default='hessians/llama2-7b', type=str)
 parser.add_argument('--scratch_path', default=None, type=str)
 parser.add_argument('--chunk_size', default=256, type=int)
 parser.add_argument('--async_copy_speed', default=-1, type=int)

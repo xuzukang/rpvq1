@@ -17,7 +17,8 @@ def set_seed(seed):
 
 def get_wikitext2(nsamples, seed, seqlen, model):
     print('Loading dataset...')
-    path = f"./cache/wikitext2_train_{nsamples}_{seqlen}.pt"
+    model_name = model.split('/')[-1]
+    path = f"./cache/wikitext2_train_{model_name}_{nsamples}_{seqlen}.pt"
     if os.path.exists(path):
         trainloader = torch.load(path)
         testenc = torch.load(f"./cache/wikitext2_test_{nsamples}_{seqlen}.pt")

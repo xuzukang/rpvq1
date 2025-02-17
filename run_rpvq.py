@@ -138,6 +138,8 @@ if __name__ == "__main__":
 
     set_start_method("spawn")
 
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
     set_seed(args.seed)
 
     if "llama" in args.model_name.lower():
@@ -184,6 +186,7 @@ if __name__ == "__main__":
             elif "llama-2" in args.model_name.lower():
                 model.seqlen = 4096
 
+            dataloader, testloader = get_data_loader("wikitext2", seed=args.seed, model=args.model_name, seqlen=model.seqlen)
             if "llama" in args.model_name.lower() or "mistral" in args.model_name.lower():
                 ppl = eval_llama(model, testloader, "cuda")
             elif "qwen" in args.model_name.lower():
@@ -269,13 +272,14 @@ if __name__ == "__main__":
         if True:
             print("--------------starting after-finetune testing---------------")
             to_device(model,"cuda")
-            
+
             model.eval()
             if "llama3" in args.model_name.lower():
                 model.seqlen = 2048
             elif "llama-2" in args.model_name.lower():
                 model.seqlen = 4096
 
+            dataloader, testloader = get_data_loader("wikitext2", seed=args.seed, model=args.model_name, seqlen=model.seqlen)
             if "llama" in args.model_name.lower() or "mistral" in args.model_name.lower():
                 ppl = eval_llama(model, testloader, "cuda")
             elif "qwen" in args.model_name.lower():
